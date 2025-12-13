@@ -12,7 +12,7 @@ __global__ void MatMulKernel(Matrix A, Matrix B, Matrix C)
     int row = threadIdx.y;
     int col = threadIdx.x;
     for (int e = 0; e < MatrixSize; ++e)
-        Cvalue += A.elements[row * MatrixSize; + e] * B.elements[e * MatrixSize + col];
+        Cvalue += A.elements[row * MatrixSize + e] * B.elements[e * MatrixSize + col];
     C.elements[row * MatrixSize + col] = Cvalue;
 }
 ```
@@ -53,7 +53,7 @@ thread(0,1) 会读取 $a_{21} a_{22} a_{23}$ 和 <font color="red">$b_{11} b_{21
 ### 引入共享内存优化
 CUDA中的shared memory就是这样的一个cache，与CPU cache不同点在于，shared memory可以自由操作其中的内容而不用像CPU cache一样考虑局部性等问题从而提高命中率。
 
-使用__shared_memory__关键字定义一块由block共享的内存
+使用__shared__关键字定义一块由block共享的内存
 
 ```
 __shared__ float As[3][3];
@@ -217,7 +217,7 @@ __global__ void MatMulKernel(Matrix A, Matrix B, Matrix C)
   for(int i = 0; i < A.width / SubMatrixSize ++i){
     //read sub matrix
     As[row][col] = A.elements[row * A.width + i * SubMatrixSize + col];
-    Bs[row][col] = B.elements[i * B.width * B.width + row * B.width + col];
+    Bs[row][col] = B.elements[i * B.width * SubMatrixSize + row * B.width + col];
     __syncthreads();
     for (int e = 0; e < MatrixSize; ++e)
         Cvalue += As[row][e] * Bs[e][col];
