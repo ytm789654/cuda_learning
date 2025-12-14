@@ -20,6 +20,7 @@ __global__ void flash_attention_kernel(const float *Q, const float *K, const flo
     // S is too big to stored in thread register(related to Bc * Bc), so use shared memory to store.
     extern __shared__ float sram[]; //dynamic shared mem
     int tile_size = Bc * d;
+
     float *Q_i = sram;  //place Q_i at first, use Bc * d float
     float *K_j = &sram[tile_size];  //then place K_j, also use Bc * d
     float *V_j = &sram[tile_size * 2]; //then V_j, Bc * d
@@ -40,10 +41,10 @@ __global__ void flash_attention_kernel(const float *Q, const float *K, const flo
                 col += Bc;
             }
         }
-        float prev_qk_row_max = -FLT_MAX;
-        float qk_row_max = -FLT_MAX;
-        float prev_l = 0;
-        float l;
+        float m_j = -FLT_MAX;
+        float prev_m_j = -FLT_MAX;
+        float l_j = 0.0f;
+        float prev_l_j = 0.0f;
 
         for (int j = 0; j < Tr; j++)
         {
@@ -58,48 +59,46 @@ __global__ void flash_attention_kernel(const float *Q, const float *K, const flo
                 }
             }
             __syncthreads();
-            // calc S = Q x K^T
-            // use noob iteration first, guess should be many bank conflicts.
-            int Qi_row = threadIdx.x;
+            //calc S = Q x K^T, each thread calc one row in S
+            //S[x][y] = Q_i[x] dot K_j[y]
             for (int K_jr = 0; K_jr < Bc; K_jr++)
             {
-                float qk_dot_sum = 0.0f;
-                for (int c = 0; c < d; c++)
-                    qk_dot_sum += Q_i[Qi_row * d + c] * K_j[K_jr * d + c];
-                qk_dot_sum *= scale;
-                qk_row_max = qk_dot_sum > qk_row_max ? qk_dot_sum : qk_row_max;
-                S[Qi_row * Bc + K_jr] = qk_dot_sum;
+                float qk = 0.0f;
+                for (int col = 0; col < d; col++)
+                    qk += Q_i[threadIdx.x * d + col] * K_j[K_jr * d + col];
+                qk = qk * scale;
+                m_j = m_j > qk ? m_j : qk;
+                S[threadIdx.x * Bc + K_jr] = qk;
             }
 
-            //calc P = exp(S - row_max(S))
-            l = prev_l * __expf(prev_qk_row_max - qk_row_max);  //seems prev_l can be hidden.
-            for (int c = 0; c < Bc; c++)
+            //calc P = exp(S-rowmax(S)), rowmax(S) = m_j, store P into S
+            //accumulate l_j at the same time
+            l_j = 0.0f;
+            for (int col = 0; col < Bc; col++)
             {
-                float exp_safe_S = __expf(S[Qi_row * Bc + c] - qk_row_max);
-                S[Qi_row * Bc + c] = exp_safe_S;
-                l += exp_safe_S;
+                float p = __expf(S[threadIdx.x * Bc + col] - m_j);
+                l_j += p;
+                S[threadIdx.x * Bc + col] = p;
             }
-
-            //calc P x V_j, update O_i
-            for (int c = 0; c < d; c++)    // for col in V_j
+            //calc PV and accumulate into O_i
+            for (int col = 0; col < d; col++)   //for each col in V
             {
-                float pv_sum = 0.0f;
-                for (int V_jr = 0; V_jr < Bc; V_jr++)   // for row in V_j
-                    pv_sum += S[Qi_row * Bc + V_jr] * V_j[V_jr *d + c];    // stride for S is Bc, not d !!!
-                O_i[Qi_row * d + c] = O_i[Qi_row * d + c] * __expf(prev_qk_row_max - qk_row_max) + pv_sum;    //scale O_i and add P x V
+                float pv = 0.0f;
+                for (int V_jr = 0; V_jr < Bc; V_jr++)
+                    pv += S[threadIdx.x * Bc + V_jr] * V_j[V_jr * d + col];
+                O_i[threadIdx.x * d + col] = O_i[threadIdx.x * d + col] * __expf(prev_m_j - m_j) + pv;
             }
             
-            // calc m and l and update prev_m prev_l
-            // qk_row_max = fmaxf(qk_row_max, prev_qk_row_max); no need to update row_max, it has been updated when calc S
-            prev_qk_row_max = qk_row_max;
-            prev_l = l;
+            //update l, m
+            l_j += prev_l_j * __expf(prev_m_j - m_j);   //in fact init l_j in exp(m_j - prev_m_j) is the same, but this step follow algo
+            prev_m_j = m_j;
+            prev_l_j = l_j;
         }
         // write O_i to O, write m + log(l) to L
+        // due to O rely on l_j and l_j stored in each thread, so each thread handle one row in O_i
         for (int col = 0; col < d; col++)
-            // due to O rely on l, l stored in each thread, so let each thread write one row to O
-            // better to update O_i, divide O_i by l, and then use warp to write back to memory.
-            O[(tile_id * Bc + threadIdx.x) * d + col] = O_i[threadIdx.x * d + col] / l;
-        L[tile_id * Bc + threadIdx.x] = qk_row_max + __logf(l);
+            O[(tile_id * Bc + threadIdx.x) * d + col] = O_i[threadIdx.x * d + col] / l_j;
+        L[tile_id * Bc + threadIdx.x] = m_j + __logf(l_j);
     }
 }
 
