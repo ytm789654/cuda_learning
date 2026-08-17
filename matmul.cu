@@ -184,8 +184,8 @@ __global__ void matmul_kernel_v3(float* A, float* B, float* C,
     int thread_row_idx = tid / threads_num_row;
     int thread_col_idx = tid % threads_num_row;
 
-    float a_frag[TM] = {0.0f};
-    float b_frag[TN] = {0.0f};
+    float frag_a[TM] = {0.0f};
+    float frag_b[TN] = {0.0f};
 
     float acc[TM][TN] = {0.0f};
 
@@ -206,15 +206,15 @@ __global__ void matmul_kernel_v3(float* A, float* B, float* C,
         for (int e = 0; e < BK; e++){
             for (int i = 0; i < TM; i++){
                 int thread_r = thread_row_idx * TM + i;
-                a_frag[i] = As[thread_r][e];
+                frag_a[i] = As[thread_r][e];
             }
             for (int j = 0; j < TN; j++){
                 int thread_c = thread_col_idx * TN + j;
-                b_frag[j] = Bs[e][thread_c];
+                frag_b[j] = Bs[e][thread_c];
             }
             for (int i = 0; i < TM; i++)
                 for (int j = 0; j < TN; j++)
-                    acc[i][j] += a_frag[i] * b_frag[j];
+                    acc[i][j] += frag_a[i] * frag_b[j];
         }
         __syncthreads();
     }
@@ -282,8 +282,8 @@ __global__ void matmul_kernel_v4(float* A, float* B, float* C,
     int thread_warp_y = warp_lane / tpr;
     int thread_warp_x = warp_lane % tpr;
 
-    float a_frag[TM] = {0.0f};
-    float b_frag[TN] = {0.0f};
+    float frag_a[TM] = {0.0f};
+    float frag_b[TN] = {0.0f};
 
     float acc[TM][TN] = {0.0f};
 
@@ -304,15 +304,15 @@ __global__ void matmul_kernel_v4(float* A, float* B, float* C,
         for (int e = 0; e < BK; e++){
             for (int i = 0; i < TM; i++){
                 int r = (warp_row_id * tpc + thread_warp_y) * TM + i;
-                a_frag[i] = As[r][e];
+                frag_a[i] = As[r][e];
             }
             for (int j = 0; j < TN; j++){
                 int c = (warp_col_id * tpr + thread_warp_x) * TN + j;
-                b_frag[j] = Bs[e][c];
+                frag_b[j] = Bs[e][c];
             }
             for (int i = 0; i < TM; i++)
                 for (int j = 0; j < TN; j++)
-                    acc[i][j] += a_frag[i] * b_frag[j];
+                    acc[i][j] += frag_a[i] * frag_b[j];
         }
         __syncthreads();
     }
@@ -327,7 +327,7 @@ __global__ void matmul_kernel_v4(float* A, float* B, float* C,
 
 /*
     V5: float4 optimization replace single read to reduce instruction.
-    As a_frag read from As in col, transpose As into As[BK][BM] to make
+    As frag_a read from As in col, transpose As into As[BK][BM] to make
     As can be read via float4
 */
 #define FLOAT4(ptr) (reinterpret_cast<float4*>(&(ptr))[0])
@@ -361,8 +361,8 @@ __global__ void matmul_kernel_v5(float* A, float* B, float* C,
     int thread_row_idx = tid / threads_num_row;
     int thread_col_idx = tid % threads_num_row;
 
-    float4 a_frag[TM / 4];
-    float4 b_frag[TN / 4];
+    float4 frag_a[TM / 4];
+    float4 frag_b[TN / 4];
 
     float acc[TM][TN] = {0.0f};
 
@@ -388,23 +388,23 @@ __global__ void matmul_kernel_v5(float* A, float* B, float* C,
 
         for (int e = 0; e < BK; e++){
             for (int i = 0; i < TM / 4; i++){
-                a_frag[i] = FLOAT4(As[e][thread_row_idx * TM]);
+                frag_a[i] = FLOAT4(As[e][thread_row_idx * TM + i * 4]);
             }
 
             for (int j = 0; j < TN / 4; j++){
-                b_frag[j] = FLOAT4(Bs[e][thread_col_idx * TN]);
+                frag_b[j] = FLOAT4(Bs[e][thread_col_idx * TN + j * 4]);
             }
 
             for (int i = 0; i < TM / 4; i++)
                 for (int j = 0; j < TN / 4; j++){
-                    acc[i*4+0][j*4+0] += a_frag[i].x*b_frag[j].x;  acc[i*4+0][j*4+1] += a_frag[i].x*b_frag[j].y;
-                    acc[i*4+0][j*4+2] += a_frag[i].x*b_frag[j].z;  acc[i*4+0][j*4+3] += a_frag[i].x*b_frag[j].w;
-                    acc[i*4+1][j*4+0] += a_frag[i].y*b_frag[j].x;  acc[i*4+1][j*4+1] += a_frag[i].y*b_frag[j].y;
-                    acc[i*4+1][j*4+2] += a_frag[i].y*b_frag[j].z;  acc[i*4+1][j*4+3] += a_frag[i].y*b_frag[j].w;
-                    acc[i*4+2][j*4+0] += a_frag[i].z*b_frag[j].x;  acc[i*4+2][j*4+1] += a_frag[i].z*b_frag[j].y;
-                    acc[i*4+2][j*4+2] += a_frag[i].z*b_frag[j].z;  acc[i*4+2][j*4+3] += a_frag[i].z*b_frag[j].w;
-                    acc[i*4+3][j*4+0] += a_frag[i].w*b_frag[j].x;  acc[i*4+3][j*4+1] += a_frag[i].w*b_frag[j].y;
-                    acc[i*4+3][j*4+2] += a_frag[i].w*b_frag[j].z;  acc[i*4+3][j*4+3] += a_frag[i].w*b_frag[j].w;
+                    acc[i*4+0][j*4+0] += frag_a[i].x*frag_b[j].x;  acc[i*4+0][j*4+1] += frag_a[i].x*frag_b[j].y;
+                    acc[i*4+0][j*4+2] += frag_a[i].x*frag_b[j].z;  acc[i*4+0][j*4+3] += frag_a[i].x*frag_b[j].w;
+                    acc[i*4+1][j*4+0] += frag_a[i].y*frag_b[j].x;  acc[i*4+1][j*4+1] += frag_a[i].y*frag_b[j].y;
+                    acc[i*4+1][j*4+2] += frag_a[i].y*frag_b[j].z;  acc[i*4+1][j*4+3] += frag_a[i].y*frag_b[j].w;
+                    acc[i*4+2][j*4+0] += frag_a[i].z*frag_b[j].x;  acc[i*4+2][j*4+1] += frag_a[i].z*frag_b[j].y;
+                    acc[i*4+2][j*4+2] += frag_a[i].z*frag_b[j].z;  acc[i*4+2][j*4+3] += frag_a[i].z*frag_b[j].w;
+                    acc[i*4+3][j*4+0] += frag_a[i].w*frag_b[j].x;  acc[i*4+3][j*4+1] += frag_a[i].w*frag_b[j].y;
+                    acc[i*4+3][j*4+2] += frag_a[i].w*frag_b[j].z;  acc[i*4+3][j*4+3] += frag_a[i].w*frag_b[j].w;
                 }
         }
 
@@ -413,12 +413,145 @@ __global__ void matmul_kernel_v5(float* A, float* B, float* C,
     
     for (int i = 0; i < TM; i++){
         int r = r0 + thread_row_idx * TM + i;
-        for (int j = 0; j * 4 < TN; j += 4){
+        for (int j = 0; j < TN; j += 4){
             int c = c0 + thread_col_idx * TN + j;
             FLOAT4(C[r * N + c]) = make_float4(acc[i][j], acc[i][j+1], acc[i][j+2], acc[i][j+3]);
         }
     }
 }
+
+/*
+    V6: based on V5 introduce double buffering in GMEM->SMEM & SMEM->REG
+    BM BK BN = 128 8 128
+    BLOCK_SIZE = 256
+    each thread read BM * BK / BLOCK_SIZE = 4 float from A in one K loop
+    each thread read BK * BN / BLOCK_SIZE = 4 float from B in one K loop
+    totally, each thread calc (BM / TM) * (BN / TN) = 16 * 16 = 256 element in C
+
+    so in each K loop, each thread:
+        pre load 4 float from A, 4 float from B into REG(very important, this async load rely on REG)
+        start e loop:
+            pre load TM float from As into fragA, TM float from Bs into fragB
+            calc C frag use fragA, fragB prepared in last e loop
+        finish pre load, write to As, Bs from REG
+    after K loop, write fragC to C.
+*/
+
+template <int BM, int BN, int BK, int TM, int TN, int BLOCK_SIZE>
+__global__ void matmul_kernel_v6(float* A, float* B, float* C,
+                                   int M, int K, int N){
+    constexpr int STAGE = 2;
+    __shared__ __align__(16) float As[STAGE][BK][BM];
+    __shared__ __align__(16) float Bs[STAGE][BK][BN];
+
+    int r0 = blockIdx.y * BM;
+    int c0 = blockIdx.x * BN;
+
+    int tid = threadIdx.x;
+
+    // for tile A, BLOCK_SIZE threads is deployed into 2 dim thread_a_y_step * (BK / 4)
+    constexpr int BLOCK_SIZE_A_X = BK / 4;  // for float4
+    // constexpr int BLOCK_SIZE_A_Y = BLOCK_SIZE / BLOCK_SIZE_A_X;
+    int thread_a_y = tid / BLOCK_SIZE_A_X;
+    // int thread_a_y_step = BLOCK_SIZE_A_Y;  = BM, no need to step in y
+    int thread_a_x = tid % BLOCK_SIZE_A_X;
+
+    // for tile B, BLOCK_SIZE threads is deployed into 2 dim BK * thread_b_x_step
+    constexpr int BLOCK_SIZE_B_Y = BK;
+    constexpr int BLOCK_SIZE_B_X = BLOCK_SIZE / BLOCK_SIZE_B_Y;
+    int thread_b_y = tid / BLOCK_SIZE_B_X;
+    int thread_b_x = tid % BLOCK_SIZE_B_X;
+    // int thread_b_x_step = BLOCK_SIZE_B_X; = 64, BN * 4, no need to step in x
+
+    // constexpr int threads_num = (BM * BN) / (TM * TN);  //total threads
+    constexpr int threads_num_row = BN / TN;    // threads per row for C
+    int thread_row_idx = tid / threads_num_row;
+    int thread_col_idx = tid % threads_num_row;
+
+    float4 ldg_a, ldg_b; // register to store value from glabal mem async
+    float4 frag_a[STAGE][TM/4];
+    float4 frag_b[STAGE][TN/4];
+
+    float acc[TM][TN] = {0.0f};
+    
+    // init read first As, Bs before K loop
+    float4 tmp = FLOAT4(A[(r0 + thread_a_y) * K + thread_a_x * 4]);
+    As[0][thread_a_x * 4 + 0][thread_a_y] = tmp.x;
+    As[0][thread_a_x * 4 + 1][thread_a_y] = tmp.y;
+    As[0][thread_a_x * 4 + 2][thread_a_y] = tmp.z;
+    As[0][thread_a_x * 4 + 3][thread_a_y] = tmp.w;
+
+    FLOAT4(Bs[0][thread_b_y][thread_b_x * 4]) = FLOAT4(B[thread_b_y * N + c0 + thread_b_x * 4]);
+    __syncthreads();
+
+    // init frag_a, frag_b
+    for (int i = 0; i < TM / 4; i++)
+        frag_a[0][i] = FLOAT4(As[0][0][thread_row_idx * TM + i * 4]);
+    for (int j = 0; j < TN / 4; j++)
+        frag_b[0][j] = FLOAT4(Bs[0][0][thread_col_idx * TN + j * 4]);
+    int buf_idx = 0;
+
+    // k start from BK, use data prepared in init and read data for next loop
+    // this means k need end with K to finish final calc
+    for (int k = BK; k < K + BK; k += BK){
+        int next_buf_idx = 1 - buf_idx;
+        for (int e = 0; e < BK; e++){
+            if(e + 1 < BK){
+                // load frag_a frag_b for loop e+1
+                // for As, row is e + 1. col is thread_row_idx * TM + i * 4
+                for (int i = 0; i < TM / 4; i++)
+                    frag_a[(e+1)&1][i] = FLOAT4(As[buf_idx][e+1][thread_row_idx * TM + i * 4]);
+                // for Bs, row is e + 1, col is thread_col_idx * TN + j * 4
+                for (int j = 0; j < TN / 4; j++)
+                    frag_b[(e+1)&1][j] = FLOAT4(Bs[buf_idx][e+1][thread_col_idx * TN + j * 4]);
+            }
+            if(e == 0 && k < K){
+                // load lgd_a & lgd_b
+                // for A, row is (r0 + thread_a_y), col is (k + thread_a_x * 4)
+                ldg_a = FLOAT4(A[(r0 + thread_a_y) * K + (k + thread_a_x * 4)]);
+                // for B, row is (k + thread_b_y), col is (c0 + thread_b_x * 4)
+                ldg_b = FLOAT4(B[(k + thread_b_y) * N + (c0 + thread_b_x * 4)]);
+            }
+            for (int i = 0; i < TM / 4; i++)
+                for (int j = 0; j < TN / 4; j++){
+                    acc[i*4+0][j*4+0] += frag_a[e&1][i].x*frag_b[e&1][j].x;  acc[i*4+0][j*4+1] += frag_a[e&1][i].x*frag_b[e&1][j].y;
+                    acc[i*4+0][j*4+2] += frag_a[e&1][i].x*frag_b[e&1][j].z;  acc[i*4+0][j*4+3] += frag_a[e&1][i].x*frag_b[e&1][j].w;
+                    acc[i*4+1][j*4+0] += frag_a[e&1][i].y*frag_b[e&1][j].x;  acc[i*4+1][j*4+1] += frag_a[e&1][i].y*frag_b[e&1][j].y;
+                    acc[i*4+1][j*4+2] += frag_a[e&1][i].y*frag_b[e&1][j].z;  acc[i*4+1][j*4+3] += frag_a[e&1][i].y*frag_b[e&1][j].w;
+                    acc[i*4+2][j*4+0] += frag_a[e&1][i].z*frag_b[e&1][j].x;  acc[i*4+2][j*4+1] += frag_a[e&1][i].z*frag_b[e&1][j].y;
+                    acc[i*4+2][j*4+2] += frag_a[e&1][i].z*frag_b[e&1][j].z;  acc[i*4+2][j*4+3] += frag_a[e&1][i].z*frag_b[e&1][j].w;
+                    acc[i*4+3][j*4+0] += frag_a[e&1][i].w*frag_b[e&1][j].x;  acc[i*4+3][j*4+1] += frag_a[e&1][i].w*frag_b[e&1][j].y;
+                    acc[i*4+3][j*4+2] += frag_a[e&1][i].w*frag_b[e&1][j].z;  acc[i*4+3][j*4+3] += frag_a[e&1][i].w*frag_b[e&1][j].w;
+                }
+        }
+        if(k < K){
+            As[next_buf_idx][thread_a_x * 4 + 0][thread_a_y] = ldg_a.x;
+            As[next_buf_idx][thread_a_x * 4 + 1][thread_a_y] = ldg_a.y;
+            As[next_buf_idx][thread_a_x * 4 + 2][thread_a_y] = ldg_a.z;
+            As[next_buf_idx][thread_a_x * 4 + 3][thread_a_y] = ldg_a.w;
+
+            FLOAT4(Bs[next_buf_idx][thread_b_y][thread_b_x * 4]) = ldg_b;
+        }
+        __syncthreads();
+        buf_idx = next_buf_idx;
+        for (int i = 0; i < TM / 4; i++)
+            frag_a[0][i] = FLOAT4(As[buf_idx][0][thread_row_idx * TM + i * 4]);
+        for (int j = 0; j < TN / 4; j++)
+            frag_b[0][j] = FLOAT4(Bs[buf_idx][0][thread_col_idx * TN + j * 4]);
+    }
+
+    // write to C
+    for (int i = 0; i < TM; i++)
+    {
+        int r = r0 + thread_row_idx * TM + i;
+        for (int j = 0; j < TN; j += 4)
+        {
+            int c = c0 + thread_col_idx * TN + j;
+            FLOAT4(C[r * N + c]) = make_float4(acc[i][j], acc[i][j + 1], acc[i][j + 2], acc[i][j + 3]);
+        }
+    }
+}
+
 int main()
 {
     // seed the random generator so data differs between runs
@@ -467,50 +600,52 @@ int main()
     printf("check with CUBLAS, in row %d, col %d value is %f\n", check_row, check_col, h_C_Cublas[check_row * __N + check_col]);
 
     // launch baseline
-    // {
-    //     const int base_line_block_size = 32;
-    //     const dim3 base_line_block(base_line_block_size, base_line_block_size);
-    //     const dim3 base_line_grid(__M / base_line_block_size, __N / base_line_block_size);
-    //     matmul_baseline<<<base_line_grid, base_line_block>>>(d_A, d_B, d_C, __M, __N, __K);
-    //     cudaMemcpy(h_C, d_C, __Matrix_size_C * sizeof(float), cudaMemcpyDeviceToHost);
+    {
+        const int base_line_block_size = 32;
+        const dim3 base_line_block(base_line_block_size, base_line_block_size);
+        const dim3 base_line_grid(__M / base_line_block_size, __N / base_line_block_size);
+        matmul_baseline<<<base_line_grid, base_line_block>>>(d_A, d_B, d_C, __M, __N, __K);
+        cudaMemcpy(h_C, d_C, __Matrix_size_C * sizeof(float), cudaMemcpyDeviceToHost);
 
-    //     if (h_C[check_row * __N + check_col] - h_C_Cublas[check_row * __N + check_col] < 1e-4)
-    //         printf("baseline check pass \n");
-    //     else
-    //         printf("v0 check error! expect %f but get %f \n", h_C_Cublas[check_row * __N + check_col], h_C[check_row * __N + check_col]);
-    //     cudaMemset(d_C, 0, __Matrix_size_C * sizeof(float));
-    // }
+        if (h_C[check_row * __N + check_col] - h_C_Cublas[check_row * __N + check_col] < 1e-4)
+            printf("baseline check pass \n");
+        else
+            printf("v0 check error! expect %f but get %f \n", h_C_Cublas[check_row * __N + check_col], h_C[check_row * __N + check_col]);
+        cudaMemset(d_C, 0, __Matrix_size_C * sizeof(float));
+        memset(h_C, 0, __Matrix_size_C * sizeof(float));
+    }
 
     // launch V1
-    // {
-    //     constexpr int block_dim = 32;
-    //     const int BLOCK_NUM_X = __M / block_dim;
-    //     const int BLOCK_NUM_Y = __N / block_dim;
+    {
+        constexpr int block_dim = 32;
+        const int BLOCK_NUM_X = __M / block_dim;
+        const int BLOCK_NUM_Y = __N / block_dim;
 
-    //     dim3 grid (BLOCK_NUM_X, BLOCK_NUM_Y);
-    //     dim3 block (block_dim, block_dim);
-    //     matmul_kernel_v1<block_dim><<<grid, block>>>(d_A, d_B, d_C, __M, __N, __K);
-    //     cudaMemcpy(h_C, d_C, __Matrix_size_C * sizeof(float), cudaMemcpyDeviceToHost);
+        dim3 grid (BLOCK_NUM_X, BLOCK_NUM_Y);
+        dim3 block (block_dim, block_dim);
+        matmul_kernel_v1<block_dim><<<grid, block>>>(d_A, d_B, d_C, __M, __N, __K);
+        cudaMemcpy(h_C, d_C, __Matrix_size_C * sizeof(float), cudaMemcpyDeviceToHost);
 
-    //     if (h_C[check_row * __N + check_col] - h_C_Cublas[check_row * __N + check_col] < 1e-4)
-    //         printf("v1 check pass \n");
-    //     else
-    //         printf("v1 check error! expect %f but get %f \n", h_C_Cublas[check_row * __N + check_col], h_C[check_row * __N + check_col]);
-    //     cudaMemset(d_C, 0, __Matrix_size_C * sizeof(float));
-    // }
+        if (h_C[check_row * __N + check_col] - h_C_Cublas[check_row * __N + check_col] < 1e-4)
+            printf("v1 check pass \n");
+        else
+            printf("v1 check error! expect %f but get %f \n", h_C_Cublas[check_row * __N + check_col], h_C[check_row * __N + check_col]);
+        cudaMemset(d_C, 0, __Matrix_size_C * sizeof(float));
+        memset(h_C, 0, __Matrix_size_C * sizeof(float));
+    }
 
     // launch V2
     // tile: BM x BN, each block loads BM x BK of A and BK x BN of B per k-step
-    constexpr int BM = 64;
-    constexpr int BN = 64;
-    constexpr int BK = 16;
+    constexpr int BM_v2 = 64;
+    constexpr int BN_v2 = 64;
+    constexpr int BK_v2 = 16;
     constexpr int BS = 256;      // 1D block threads (16 x 16)
     constexpr int CBS = 16;      // C sub-tile size: TM = BM/CBS, TN = BN/CBS
-    dim3 grid2(__N / BN, __M / BM);
+    dim3 grid2(__N / BN_v2, __M / BM_v2);
     dim3 block2(BS);
 
     {
-        matmul_kernel_v2<BM, BN, BK, BS, CBS><<<grid2, block2>>>(d_A, d_B, d_C, __M, __K, __N);
+        matmul_kernel_v2<BM_v2, BN_v2, BK_v2, BS, CBS><<<grid2, block2>>>(d_A, d_B, d_C, __M, __K, __N);
         cudaMemcpy(h_C, d_C, __Matrix_size_C * sizeof(float), cudaMemcpyDeviceToHost);
 
         if (h_C[check_row * __N + check_col] - h_C_Cublas[check_row * __N + check_col] < 1e-4)
@@ -518,14 +653,20 @@ int main()
         else
             printf("v2 check error! expect %f but get %f \n", h_C_Cublas[check_row * __N + check_col], h_C[check_row * __N + check_col]);
         cudaMemset(d_C, 0, __Matrix_size_C * sizeof(float));
+        memset(h_C, 0, __Matrix_size_C * sizeof(float));
     }
 
-    constexpr int TM = 4;
-    constexpr int TN = 4;
+    constexpr int BM = 128;
+    constexpr int BN = 128;
+    constexpr int BK = 8;
+    constexpr int TM = 8;
+    constexpr int TN = 8;
+    dim3 grid3(__N / BN, __M / BM);
+    dim3 block3(BS);
     
     // launch V3
     {
-        matmul_kernel_v3<BM, BN, BK, TM, TN, BS><<<grid2, block2>>>(d_A, d_B, d_C, __M, __K, __N);
+        matmul_kernel_v3<BM, BN, BK, TM, TN, BS><<<grid3, block3>>>(d_A, d_B, d_C, __M, __K, __N);
         cudaMemcpy(h_C, d_C, __Matrix_size_C * sizeof(float), cudaMemcpyDeviceToHost);
 
         if (h_C[check_row * __N + check_col] - h_C_Cublas[check_row * __N + check_col] < 1e-4)
@@ -533,11 +674,12 @@ int main()
         else
             printf("v3 check error! expect %f but get %f \n", h_C_Cublas[check_row * __N + check_col], h_C[check_row * __N + check_col]);
         cudaMemset(d_C, 0, __Matrix_size_C * sizeof(float));
+        memset(h_C, 0, __Matrix_size_C * sizeof(float));
     }
     
     // launch V4
     {
-        matmul_kernel_v4<BM, BN, BK, TM, TN, BS><<<grid2, block2>>>(d_A, d_B, d_C, __M, __K, __N);
+        matmul_kernel_v4<BM, BN, BK, TM, TN, BS><<<grid3, block3>>>(d_A, d_B, d_C, __M, __K, __N);
         cudaMemcpy(h_C, d_C, __Matrix_size_C * sizeof(float), cudaMemcpyDeviceToHost);
 
         if (h_C[check_row * __N + check_col] - h_C_Cublas[check_row * __N + check_col] < 1e-4)
@@ -545,11 +687,12 @@ int main()
         else
             printf("v4 check error! expect %f but get %f \n", h_C_Cublas[check_row * __N + check_col], h_C[check_row * __N + check_col]);
         cudaMemset(d_C, 0, __Matrix_size_C * sizeof(float));
+        memset(h_C, 0, __Matrix_size_C * sizeof(float));
     }
 
     // launch V5
     {
-        matmul_kernel_v5<BM, BN, BK, TM, TN, BS><<<grid2, block2>>>(d_A, d_B, d_C, __M, __K, __N);
+        matmul_kernel_v5<BM, BN, BK, TM, TN, BS><<<grid3, block3>>>(d_A, d_B, d_C, __M, __K, __N);
         cudaMemcpy(h_C, d_C, __Matrix_size_C * sizeof(float), cudaMemcpyDeviceToHost);
 
         if (h_C[check_row * __N + check_col] - h_C_Cublas[check_row * __N + check_col] < 1e-4)
@@ -557,6 +700,27 @@ int main()
         else
             printf("v5 check error! expect %f but get %f \n", h_C_Cublas[check_row * __N + check_col], h_C[check_row * __N + check_col]);
         cudaMemset(d_C, 0, __Matrix_size_C * sizeof(float));
+        memset(h_C, 0, __Matrix_size_C * sizeof(float));
+    }
+    
+    // launch V6
+    {
+        matmul_kernel_v6<BM, BN, BK, TM, TN, BS><<<grid3, block3>>>(d_A, d_B, d_C, __M, __K, __N);
+        cudaMemcpy(h_C, d_C, __Matrix_size_C * sizeof(float), cudaMemcpyDeviceToHost);
+
+        if (h_C[check_row * __N + check_col] - h_C_Cublas[check_row * __N + check_col] < 1e-4)
+            printf("v6 check pass \n");
+        else
+            printf("v6 check error! expect %f but get %f \n", h_C_Cublas[check_row * __N + check_col], h_C[check_row * __N + check_col]);
+        float max_err = 0.0, sum_err = 0.0;
+        for (int i = 0; i < __M * __N; ++i) {
+            float err = fabs((float)h_C[i] - (float)h_C_Cublas[i]);
+            max_err = fmax(max_err, err);
+            sum_err += err;
+        }
+        printf("Vx: max_err=%.3e  mean_err=%.3e\n", max_err, sum_err / (__M * __N));
+        cudaMemset(d_C, 0, __Matrix_size_C * sizeof(float));
+        memset(h_C, 0, __Matrix_size_C * sizeof(float));
     }
     // ncu --set detailed -f -o matmul.ncu-rep 1.exe
     // nvcc -o 1.exe matmul.cu -lcublas
